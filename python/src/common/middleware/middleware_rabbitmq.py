@@ -65,18 +65,18 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareRabbitMQBase, MessageMi
             self.exchange_name = exchange_name
             self.channel.exchange_declare(exchange=self.exchange_name, exchange_type='topic')
             self.channel.basic_qos(prefetch_count=1)
-            result = self.channel.queue_declare(queue='', exclusive=True)
-            self.queue_name = result.method.queue
-            for routing_key in self.routing_keys:
-                self.channel.queue_bind(exchange=self.exchange_name, queue=self.queue_name, routing_key=routing_key)
         except (pika.exceptions.AMQPConnectionError, pika.exceptions.AMQPChannelError) as e:
             raise MessageMiddlewareDisconnectedError() from e
     
     def start_consuming(self, on_message_callback):
         try:
             self._on_message_callback = on_message_callback
+            result = self.channel.queue_declare(queue='', exclusive=True)
+            queue_name = result.method.queue
+            for routing_key in self.routing_keys:
+                self.channel.queue_bind(exchange=self.exchange_name, queue=queue_name, routing_key=routing_key)
             
-            self.channel.basic_consume(queue=self.queue_name, on_message_callback=self._callback, auto_ack=False)
+            self.channel.basic_consume(queue=queue_name, on_message_callback=self._callback, auto_ack=False)
             self.channel.start_consuming()
         except pika.exceptions.AMQPConnectionError as e:
             raise MessageMiddlewareDisconnectedError() from e

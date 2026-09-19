@@ -9,7 +9,6 @@ MOM_HOST = os.environ["MOM_HOST"]
 INPUT_QUEUE = os.environ["INPUT_QUEUE"]
 SUM_AMOUNT = int(os.environ["SUM_AMOUNT"])
 SUM_PREFIX = os.environ["SUM_PREFIX"]
-SUM_CONTROL_EXCHANGE = "SUM_CONTROL_EXCHANGE"
 AGGREGATION_AMOUNT = int(os.environ["AGGREGATION_AMOUNT"])
 AGGREGATION_PREFIX = os.environ["AGGREGATION_PREFIX"]
 
@@ -18,62 +17,82 @@ class SumFilter:
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, INPUT_QUEUE
         )
-        self.data_output_exchanges = []
-        for i in range(AGGREGATION_AMOUNT):
-            data_output_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
-                MOM_HOST, AGGREGATION_PREFIX, [f"{AGGREGATION_PREFIX}_{i}"]
-            )
-            self.data_output_exchanges.append(data_output_exchange)
         self.amount_by_fruit = {}
-
+        self.lock = threading.Lock()
+        
     def _process_data(self, client_id, fruit, amount):
         logging.info(f"Process data")
-        if client_id not in self.amount_by_fruit:
-            self.amount_by_fruit[client_id] = {}
-            
-        self.amount_by_fruit[client_id][fruit] = self.amount_by_fruit[client_id].get(
-            fruit, fruit_item.FruitItem(fruit, 0)
-        ) + fruit_item.FruitItem(fruit, int(amount))
+        with self.lock:
+            if client_id not in self.amount_by_fruit:
+                self.amount_by_fruit[client_id] = {}
+            self.amount_by_fruit[client_id][fruit] = self.amount_by_fruit[client_id].get(
+                fruit, fruit_item.FruitItem(fruit, 0)
+            ) + fruit_item.FruitItem(fruit, int(amount))
 
-    def _process_eof(self, client_id):
-        logging.info(f"Broadcasting data messages")
-        
-        if client_id in self.amount_by_fruit:
-            for final_fruit_item in self.amount_by_fruit[client_id].values():
-                for data_output_exchange in self.data_output_exchanges:
-                    data_output_exchange.send(
-                        message_protocol.internal.serialize(
-                            {
-                                "client_id": client_id,
-                                "type": "data",
-                                "fruit": final_fruit_item.fruit,
-                                "amount": final_fruit_item.amount,
-                            }
-                        )
-                    )
-            
-            del self.amount_by_fruit[client_id]
-
-        logging.info(f"Broadcasting EOF message")
-        for data_output_exchange in self.data_output_exchanges:
-            data_output_exchange.send(message_protocol.internal.serialize(
-                {
-                    "client_id": client_id, 
-                    "type": "eof"
-                }
-            ))
-
+    def _notify_sums(self, message):
+        for i in range(SUM_AMOUNT):
+            control_queue = middleware.MessageMiddlewareQueueRabbitMQ(
+                MOM_HOST, f"{SUM_PREFIX}_{i}"
+            )
+            control_queue.send(message)
+            control_queue.close()
 
     def process_data_messsage(self, message, ack, nack):
         fields = message_protocol.internal.deserialize(message)
         if fields["type"] == "data":
             self._process_data(fields["client_id"], fields["fruit"], fields["amount"])
         else:
-            self._process_eof(fields["client_id"])
+            self._notify_sums(message)
         ack()
 
+    def _flush_client(self, client_id):
+        with self.lock:
+            totals = {}
+            if client_id in self.amount_by_fruit:
+                totals = self.amount_by_fruit[client_id]
+                del self.amount_by_fruit[client_id]
+
+        for i in range(AGGREGATION_AMOUNT):
+            output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
+                MOM_HOST, f"{AGGREGATION_PREFIX}_{i}"
+            )
+            for final_fruit_item in totals.values():
+                output_queue.send(
+                    message_protocol.internal.serialize(
+                        {
+                            "client_id": client_id,
+                            "type": "data",
+                            "fruit": final_fruit_item.fruit,
+                            "amount": final_fruit_item.amount,
+                        }
+                    )
+                )
+            output_queue.send(
+                message_protocol.internal.serialize(
+                    {"client_id": client_id, "type": "eof"}
+                )
+            )
+            output_queue.close()
+
+    def process_control_message(self, message, ack, nack):
+        fields = message_protocol.internal.deserialize(message)
+        self._flush_client(fields["client_id"])
+        ack()
+
+    def _control_loop(self):
+        try:
+            control_queue = middleware.MessageMiddlewareQueueRabbitMQ(
+                MOM_HOST, f"{SUM_PREFIX}_{ID}"
+            )
+            control_queue.start_consuming(self.process_control_message)
+        except Exception:
+            logging.exception("Control thread failed")
+            os._exit(1)
+
     def start(self):
+        threading.Thread(target=self._control_loop, daemon=True).start()
         self.input_queue.start_consuming(self.process_data_messsage)
+
 
 def main():
     logging.basicConfig(level=logging.INFO)

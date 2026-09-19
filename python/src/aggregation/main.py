@@ -17,29 +17,37 @@ TOP_SIZE = int(os.environ["TOP_SIZE"])
 class AggregationFilter:
 
     def __init__(self):
-        self.input_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
-            MOM_HOST, AGGREGATION_PREFIX, [f"{AGGREGATION_PREFIX}_{ID}"]
+        self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
+            MOM_HOST, f"{AGGREGATION_PREFIX}_{ID}"
         )
         self.output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, OUTPUT_QUEUE
         )
         self.fruit_top = {}
+        self.eof_count = {}
 
     def _process_data(self, client_id, fruit, amount):
         logging.info("Processing data message")
         if client_id not in self.fruit_top:
             self.fruit_top[client_id] = []
-            
+
         for i in range(len(self.fruit_top[client_id])):
             if self.fruit_top[client_id][i].fruit == fruit:
-                self.fruit_top[client_id][i] = self.fruit_top[client_id][i] + fruit_item.FruitItem(
+                updated_item = self.fruit_top[client_id].pop(i) + fruit_item.FruitItem(
                     fruit, amount
                 )
+                bisect.insort(self.fruit_top[client_id], updated_item)
                 return
         bisect.insort(self.fruit_top[client_id], fruit_item.FruitItem(fruit, amount))
 
     def _process_eof(self, client_id):
         logging.info("Received EOF")
+        if client_id not in self.eof_count:
+            self.eof_count[client_id] = 0
+        self.eof_count[client_id] += 1
+        if self.eof_count[client_id] < SUM_AMOUNT:
+            return
+        
         fruit_chunk = list(self.fruit_top[client_id][-TOP_SIZE:])
         fruit_chunk.reverse()
         fruit_top = list(
@@ -56,6 +64,7 @@ class AggregationFilter:
             }
         ))
         del self.fruit_top[client_id]
+        del self.eof_count[client_id]
 
     def process_messsage(self, message, ack, nack):
         logging.info("Process message")
@@ -67,7 +76,7 @@ class AggregationFilter:
         ack()
 
     def start(self):
-        self.input_exchange.start_consuming(self.process_messsage)
+        self.input_queue.start_consuming(self.process_messsage)
 
 
 def main():
