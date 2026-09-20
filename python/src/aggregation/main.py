@@ -59,7 +59,6 @@ class AggregationFilter:
         self.output_queue.send(message_protocol.internal.serialize(
             {
                 "client_id": client_id,
-                "type": "eof",
                 "fruit_top": fruit_top
             }
         ))

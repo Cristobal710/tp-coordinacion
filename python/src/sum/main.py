@@ -12,6 +12,12 @@ SUM_PREFIX = os.environ["SUM_PREFIX"]
 AGGREGATION_AMOUNT = int(os.environ["AGGREGATION_AMOUNT"])
 AGGREGATION_PREFIX = os.environ["AGGREGATION_PREFIX"]
 
+def matching_aggregator_fruit(fruit, aggregator_id):
+    total = 0
+    for c in fruit:
+        total += ord(c)
+    return (total % AGGREGATION_AMOUNT) == aggregator_id
+
 class SumFilter:
     def __init__(self):
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
@@ -53,10 +59,10 @@ class SumFilter:
                 del self.amount_by_fruit[client_id]
 
         for i in range(AGGREGATION_AMOUNT):
-            output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-                MOM_HOST, f"{AGGREGATION_PREFIX}_{i}"
-            )
+            output_queue = middleware.MessageMiddlewareQueueRabbitMQ(MOM_HOST, f"{AGGREGATION_PREFIX}_{i}")
             for final_fruit_item in totals.values():
+                if not matching_aggregator_fruit(final_fruit_item.fruit, i):
+                    continue
                 output_queue.send(
                     message_protocol.internal.serialize(
                         {

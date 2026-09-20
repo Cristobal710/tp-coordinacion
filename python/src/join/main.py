@@ -1,5 +1,6 @@
 import os
 import logging
+import bisect
 
 from common import middleware, message_protocol, fruit_item
 
@@ -22,11 +23,43 @@ class JoinFilter:
         self.output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, OUTPUT_QUEUE
         )
+        self.fruit_top = {}
+        self.fruits_tops_count = {}
+
+    def _send_top_fruits(self, client_id):
+        logging.info("Received partial tops from all aggregators")
+        fruit_chunk = list(self.fruit_top[client_id][-TOP_SIZE:])
+        fruit_chunk.reverse()
+        fruit_top = list(
+            map(
+                lambda item: (item.fruit, item.amount),
+                fruit_chunk,
+            )
+        )
+        self.output_queue.send(
+            message_protocol.internal.serialize(
+                {"client_id": client_id, "type": "result", "fruit_top": fruit_top}
+            )
+        )
+        del self.fruit_top[client_id]
+        del self.fruits_tops_count[client_id]
 
     def process_messsage(self, message, ack, nack):
-        logging.info("Received top")
-        fruit_top = message_protocol.internal.deserialize(message)
-        self.output_queue.send(message_protocol.internal.serialize(fruit_top))
+        fields = message_protocol.internal.deserialize(message)
+        client_id = fields["client_id"]
+
+        if client_id not in self.fruit_top:
+            self.fruit_top[client_id] = []
+            self.fruits_tops_count[client_id] = 0
+
+        for fruit, amount in fields["fruit_top"]:
+            bisect.insort(
+                self.fruit_top[client_id], fruit_item.FruitItem(fruit, amount)
+            )
+        self.fruits_tops_count[client_id] += 1
+
+        if self.fruits_tops_count[client_id] == AGGREGATION_AMOUNT:
+            self._send_top_fruits(client_id)
         ack()
 
     def start(self):
