@@ -1,6 +1,7 @@
 import os
 import logging
 import bisect
+import signal
 
 from common import middleware, message_protocol, fruit_item
 
@@ -25,6 +26,7 @@ class JoinFilter:
         )
         self.fruit_top = {}
         self.fruits_tops_count = {}
+        signal.signal(signal.SIGTERM, self.handle_sigterm)
 
     def _send_top_fruits(self, client_id):
         logging.info("Received partial tops from all aggregators")
@@ -62,8 +64,13 @@ class JoinFilter:
             self._send_top_fruits(client_id)
         ack()
 
+    def handle_sigterm(self, signum, frame):
+        self.input_queue.stop_consuming()
+
     def start(self):
         self.input_queue.start_consuming(self.process_messsage)
+        self.input_queue.close()
+        self.output_queue.close()
 
 
 def main():

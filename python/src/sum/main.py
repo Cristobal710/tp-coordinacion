@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import signal
 
 from common import middleware, message_protocol, fruit_item
 
@@ -25,6 +26,7 @@ class SumFilter:
         )
         self.amount_by_fruit = {}
         self.lock = threading.Lock()
+        signal.signal(signal.SIGTERM, self.handle_sigterm)
         
     def _process_data(self, client_id, fruit, amount):
         logging.info(f"Process data")
@@ -95,9 +97,13 @@ class SumFilter:
             logging.exception("Control thread failed")
             os._exit(1)
 
+    def handle_sigterm(self, signum, frame):
+        self.input_queue.stop_consuming()
+
     def start(self):
         threading.Thread(target=self._control_loop, daemon=True).start()
         self.input_queue.start_consuming(self.process_data_messsage)
+        self.input_queue.close()
 
 
 def main():
